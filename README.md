@@ -1,4 +1,4 @@
-# AMT Homework: Inference for Mixed Populations (2024–2025)
+# Inference for Mixed Populations (2024–2025)
 
 ## Data
 - Source: `hemodialysismix.csv` / `hemodialysismix.rds` (same content)
