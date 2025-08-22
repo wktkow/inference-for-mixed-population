@@ -1,6 +1,9 @@
 #!/usr/bin/env Rscript
+# Entry point for the hemodialysis mixture analysis: orchestrates data load, EDA,
+# dispersion checks, mixture fitting, covariate associations, figures, and report.
 
 options(device = "png")
+# Force a non-interactive graphics device so plots are saved as PNGs in any env.
 
 suppressPackageStartupMessages({
   if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr", repos = "https://cloud.r-project.org")
@@ -11,6 +14,7 @@ suppressPackageStartupMessages({
   if (!requireNamespace("flexmix", quietly = TRUE)) install.packages("flexmix", repos = "https://cloud.r-project.org")
   if (!requireNamespace("nnet", quietly = TRUE)) install.packages("nnet", repos = "https://cloud.r-project.org")
 })
+# Ensure required packages are present; install them on the fly if missing for portability.
 
 suppressPackageStartupMessages({
   library(dplyr)
@@ -20,8 +24,10 @@ suppressPackageStartupMessages({
   library(flexmix)
   library(nnet)
 })
+# Load libraries quietly to keep console output clean in scripted runs.
 
 dir.create("figs", showWarnings = FALSE)
+# Create an output directory for figures; ignore if it already exists.
 
 # 1) Load data (include NAs)
 path_csv <- "./hemodialysismix.csv"
@@ -48,10 +54,14 @@ dat <- dat_raw %>%
     AGE_imp = ifelse(is.na(AGE), mean(AGE, na.rm = TRUE), AGE),
     p_hat = NRIRON / NR
   )
+# Standardize schema (names/types) and derive analysis fields including
+# explicit NA handling for SEX, mean-imputed AGE with a missingness flag,
+# and subject-level proportion p_hat = NRIRON/NR.
 
 # Sanity checks
 stopifnot(all(dat$NR >= 1))
 stopifnot(all(dat$NRIRON >= 0 & dat$NRIRON <= dat$NR))
+# Basic data validation: each subject has trials and successes within [0, NR].
 
 # 2) EDA
 eda_summary <- list(
@@ -61,12 +71,15 @@ eda_summary <- list(
   age_summary = summary(dat$AGE),
   p_hat_summary = summary(dat$p_hat)
 )
+# Lightweight summaries to be embedded in the README for quick inspection.
 
+# Visualize subject-level adequate iron proportion distribution.
 g_p <- ggplot(dat, aes(x = p_hat)) +
   geom_histogram(bins = 30, color = "white", fill = "steelblue") +
   labs(title = "Distribution of adequate iron proportion (NRIRON/NR)", x = "Proportion", y = "Count")
 ggsave("figs/p_hat_hist.png", g_p, width = 7, height = 4.5, dpi = 150)
 
+# Visualize distribution of counts of adequate iron across subjects.
 g_counts <- ggplot(dat, aes(x = NRIRON)) +
   geom_histogram(binwidth = 1, color = "white", fill = "darkorange") +
   labs(title = "Distribution of counts of adequate iron (NRIRON)", x = "NRIRON", y = "Count")
@@ -79,6 +92,7 @@ p0 <- fitted(glm0)
 pearson0 <- sum(((dat$NRIRON - dat$NR * p0) / sqrt(dat$NR * p0 * (1 - p0)))^2, na.rm = TRUE)
 df0 <- nrow(dat) - length(coef(glm0))
 phi0 <- as.numeric(pearson0 / df0)
+# Estimate dispersion under a single-probability binomial to detect overdispersion.
 
 # With covariates AGE and SEX (including missingness indicator)
 glm_cov <- glm(cbind(NRIRON, NR - NRIRON) ~ AGE_imp + AGE_miss + SEX_factor, data = dat, family = binomial())
@@ -86,12 +100,14 @@ p_cov <- fitted(glm_cov)
 pearson_cov <- sum(((dat$NRIRON - dat$NR * p_cov) / sqrt(dat$NR * p_cov * (1 - p_cov)))^2, na.rm = TRUE)
 df_cov <- nrow(dat) - length(coef(glm_cov))
 phi_cov <- as.numeric(pearson_cov / df_cov)
+# Repeat dispersion check after adjusting for AGE/SEX to see if heterogeneity remains.
 
 # 4) Finite mixture of binomials via custom EM (robust, no external deps)
 logsumexp_vec <- function(v) {
   m <- max(v)
   m + log(sum(exp(v - m)))
 }
+# Numerically stable helper for log-sum-exp in posterior normalization.
 
 fit_binom_mixture_em <- function(y, n, k, n_starts = 5, max_iter = 200, tol = 1e-8) {
   y <- as.numeric(y); n <- as.numeric(n)
@@ -136,11 +152,14 @@ fit_binom_mixture_em <- function(y, n, k, n_starts = 5, max_iter = 200, tol = 1e
   bic <- -2 * best$logLik + kparams * log(length(y))
   list(logLik = best$logLik, pi = best$pi, p = best$p, posterior = post, BIC = bic)
 }
+# Custom EM for Binomial mixtures with multiple random starts; returns MAP posteriors
+# and BIC for model selection; uses simple E/M updates on probabilities and weights.
 
 mix_fits <- lapply(1:3, function(k) fit_binom_mixture_em(dat$NRIRON, dat$NR, k = k, n_starts = 10))
 mix_bics <- sapply(mix_fits, function(m) m$BIC)
 best_k <- which.min(mix_bics)
 best_mix <- mix_fits[[best_k]]
+# Fit candidate models with k=1..3, compare by BIC, and select the best mixture size.
 
 mixture_summary <- data.frame(
   component = seq_len(best_k),
@@ -149,12 +168,15 @@ mixture_summary <- data.frame(
 )
 ord <- order(mixture_summary$p)
 mixture_summary <- mixture_summary[ord, ]
+# Summarize ordered component success probabilities and their mixture weights.
 
 # Classification by MAP
 comp_class <- apply(best_mix$posterior[, ord, drop = FALSE], 1, which.max)
 dat$component <- factor(comp_class, levels = seq_len(nrow(mixture_summary)))
+# Assign each subject to the most likely component for downstream association plots.
 
 # Plots
+# Plot estimated component probabilities with labels showing mixing weights.
 g_mix <- ggplot(mixture_summary, aes(x = factor(component), y = p)) +
   geom_point(size = 3, color = "firebrick") +
   geom_text(aes(label = sprintf("pi=%.2f", pi)), vjust = -1.0, size = 3.5) +
@@ -162,12 +184,14 @@ g_mix <- ggplot(mixture_summary, aes(x = factor(component), y = p)) +
   ylim(0, 1)
 ggsave("figs/mixture_components.png", g_mix, width = 6, height = 4, dpi = 150)
 
+# Visualize age distributions across components (imputed age, with NA flag elsewhere).
 g_age_comp <- ggplot(dat, aes(x = component, y = AGE_imp, fill = component)) +
   geom_violin(alpha = 0.5) + geom_boxplot(width = 0.1, outlier.size = 0.5) +
   labs(title = "Age by mixture component", x = "Component", y = "Age (years, imputed for NA)") +
   theme(legend.position = "none")
 ggsave("figs/age_by_component.png", g_age_comp, width = 7, height = 4.5, dpi = 150)
 
+# Stacked bar chart of component-wise sex composition (including Unknown level).
 g_sex_comp <- ggplot(dat, aes(x = component, fill = SEX_factor)) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
@@ -193,13 +217,16 @@ assoc_results <- list()
   # Kruskal-Wallis p_hat by SEX
   assoc_results$kw_p_sex <- kruskal.test(p_hat ~ SEX_factor, data = df_class)$p.value
 }
+# Evaluate whether AGE/SEX relate to component membership and p_hat via simple tests.
 
 # 6) Do covariates explain clusters? (approximate check via multinomial regression)
 flexmix_concom <- NULL
 concom_bic <- NA_real_
+# Placeholder for concomitant model selection; custom EM does not include concomitants.
 
 # 7) Write README.md
 fmt_pct <- function(x) paste0(sprintf("%.1f", 100 * x), "%")
+# Helper to format percentages consistently in the report.
 
 lines <- c(
   "# AMT: Homework Assignment — Hemodialysis Mixture Analysis",
@@ -282,8 +309,10 @@ lines <- c(
   "",
   "(See notebook `main.ipynb` for full reproducible analysis and figures.)"
 )
+# Compose a concise Markdown report including summaries, diagnostics, and figures.
 
 writeLines(unlist(lines), con = "README.md")
+# Persist the report to README.md at project root for easy viewing on GitHub.
 
 # Save key objects for notebook use
 saveRDS(list(
@@ -293,7 +322,9 @@ saveRDS(list(
   mixture_summary = mixture_summary,
   assoc_results = assoc_results
 ), file = "analysis_results.rds")
+# Store key results for interactive exploration in the notebook.
 
 cat("Analysis completed. README.md and figures written.\n")
+# Final console message to indicate successful run in automated environments.
 
 
