@@ -13,3 +13,35 @@ The env is fully setup and ready to use anything you need.
 
 Additional notes:
 You have data converted into 2 formats (data available is exactly the same in both files), .csv and serialized .rds format. Pick whichever one fits the preference of ease of use and accuracy.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Describe data without any modeling or reasoning.
+0. Please read again ./AMT20-lecture.md
+1. At the start of the analysis - before comencing any further reasoning, please perform descriptive statistics, describing the distribution of variables - including the dependent variable.
+1.1. Please create histograms of density adequate iron stores / counts / number of measurements
+## Bullet point data analysis suggestions.
+2. Please Fit a unimodal binomial GLM to the distribution (intercept only) to get a Pearson's dispersion index.
+Interpret the results - include the reasoning.
+3. Please fit a binomial distribution model 
+4. Please use the CAMAN package. Use the mixalg procedure (inference on the number of support points in the distribution of the data of interest).
+5. Please first use the mixalg.VEM - passing its data into mixalg.EM. In addition please use mixalg alone (for comparison).
+6. Use and output a gradient function image for a binomial mixture (the image outputed should be a function graph to be used as a diagnostic NMPLE indicator).
+7. Include data and reasoning to answer the following:
+- Does the new distribution mixture adequately explain the variability of the data (output grid values/means, weights/proportions of the new mixing distribution)? 
+- Do AGE/SEX reduce overdispersion?
+## Finalization.
+8. Output a figure of a new mixing model distribution (line/lines - 1 for each component mixture) overlap the data on the density graph of a variable of interest.
