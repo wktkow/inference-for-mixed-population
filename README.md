@@ -1,84 +1,72 @@
-# AMT: Homework Assignment — Hemodialysis Mixture Analysis
+# AMT Homework: Inference for Mixed Populations (2024–2025)
 
-## Data and outcome
-- Source: `hemodialysismix.csv` (patients on hemodialysis)
-- Response: `NRIRON` = number of occasions with adequate iron stores
-- Trials: `NR` = number of measurements per subject
-- Covariates: `AGE` (years), `SEX` (1=Male, 2=Female, NA kept as Unknown)
+## Data
+- Source: `hemodialysismix.csv` / `hemodialysismix.rds` (same content)
+- Variables: `ID`, `AGE`, `SEX` (1=Male, 2=Female, NA allowed), `NR` (number of measurements), `NRIRON` (adequate iron stores count)
+- Outcome of interest: number of adequate iron stores (`NRIRON`) out of `NR`.
+- Missing data policy: NA values are kept and analyzed (no deletions). For modeling, rows with undefined binomial contributions (`NR==0`) are retained but receive zero likelihood weight where appropriate.
 
-## Descriptive overview
-- N subjects: 3823
-- Distribution of follow-up counts NR:
-# A tibble: 6 × 2
-     NR     n
-  <int> <int>
-1     1   880
-2     2   828
-3     3  1180
-4     4   780
-5     5   127
-6     6    28
-- `SEX` counts:
-# A tibble: 3 × 2
-  SEX_factor     n
-  <fct>      <int>
-1 Male        1952
-2 Female      1732
-3 Unknown      139
-- Proportion of adequate iron p = NRIRON/NR:
-   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
- 0.0000  0.0000  0.0000  0.3118  0.6667  1.0000 
+## Software
+- R with packages: `dplyr`, `ggplot2`, `readr`, `CAMAN`, `flexmix`.
+- Procedures: GLM (binomial), CAMAN VEM→EM (NPMLE), gradient function check.
 
-Figures:
-- figs/p_hat_hist.png
-- figs/nriron_hist.png
-- figs/nr_hist.png
+## Descriptive statistics
+- N = 3823 patients
+- AGE: mean = 62.1564, sd = 15.1006, min = 18, max = 99, missing = 0
+- SEX: Male = 1952, Female = 1732, Unknown = 139
+- NR (number of measurements): mean = 2.6155, sd = 1.1801, min = 1, max = 6
+- NRIRON (adequate counts): mean = 0.8308, sd = 1.0996, min = 0, max = 5
+- Proportion NRIRON/NR: mean = 0.3118, sd = 0.3853, min = 0, max = 1, missing = 0
 
-## Dispersion assessment
-- Intercept-only binomial GLM Pearson dispersion phi = 1.643 (>1 indicates overdispersion)
-- GLM with AGE and SEX (with missingness indicator) phi = 1.644
-- Evidence of overdispersion relative to simple binomial.
-- Overdispersion persists even after adjusting for AGE/SEX.
+Figures (saved in `figs/`):
+- `p_hat_hist.png`: histogram of `NRIRON/NR` (proportion adequate)
+- `nriron_hist.png`: histogram of `NRIRON` (counts)
+- `nr_hist.png`: histogram of `NR` (number of measurements)
 
-## Finite mixture of Binomials (CAMAN where available)
-- Selected mixture size: k = 3
-- Estimated component probabilities (p) and weights (pi):
-  component          p        pi
-1         1 0.02498244 0.4103122
-2         2 0.37421392 0.4078355
-3         3 0.83884988 0.1818523
-- Gradient diagnostic: figs/gradient_binomial.png
+## Modeling
+### Intercept-only Binomial GLM
+- Model: `NRIRON ~ 1` with Binomial(`NR`, p).
+- Pearson dispersion index φ computed via Pearson residuals.
+- Interpretation: φ≈1 indicates equidispersion; φ>1 overdispersion; φ<1 underdispersion.
 
-Figures:
-- figs/mixture_components.png
-- figs/age_by_component.png
-- figs/sex_by_component.png
-- figs/overlay_mixture_NR3.png
+### Binomial GLM with covariates
+- Model: `NRIRON ~ AGE + age_missing + SEX` (Binomial with trials `NR`). AGE mean-imputed with an indicator to retain all rows including NA.
+- Pearson dispersion recomputed to assess whether AGE/SEX reduce overdispersion.
 
-## Relation to AGE and SEX
-- Spearman correlation p_hat~AGE p-value: 0.155
-- Kruskal-Wallis p_hat by SEX p-value: 0.411
-- Multinomial logit (component ~ AGE + SEX) p-values (rows: components vs ref):
-  (Intercept) AGE_imp AGE_miss SEX_factorFemale SEX_factorUnknown
-2           0  0.0799      NaN           0.2247            0.2149
-3           0  0.5000      NaN           0.8934            0.4678
-  SEX_factorOther
-2             NaN
-3             NaN
+### Finite mixture (CAMAN)
+- Family: Binomial. Data: counts `NRIRON` with `NR` trials.
+- Procedures run:
+  - Phase 1: `mixalg.VEM` (dense grid, startk=50, acc=1e-8).
+  - Phase 2: `mixalg.EM` seeded from VEM.
+  - Joint: `mixalg` (VEM→EM with combining limit=0.01).
+- Outputs reported in notebook: number of support points `ĝ`, support probabilities `p̂_j` (grid values), weights `π̂_j`, log-likelihood.
 
-## Do covariates fully explain clusters?
-- Residual overdispersion after GLM suggests clusters beyond AGE/SEX.
+### Gradient function (NPMLE diagnostic)
+- For the fitted NPML mixing distribution, the gradient function d(Ĝ, p) was computed across a dense grid in p ∈ (0,1).
+- Diagnostic: NPMLE should satisfy d(Ĝ, p) ≤ 1 for all p, and equal 1 at the support points. Figure saved as `figs/gradient_binomial.png`.
 
-## Software and estimation
-- R, glm (binomial), CAMAN (mixalg.VEM -> mixalg.EM; or mixalg)
-- NAs were retained: `SEX` as explicit 'Unknown' level; `AGE` imputed with mean plus a missingness indicator to keep subjects in all analyses.
+## Results (high level)
+- Intercept-only GLM: Pearson dispersion φ = 1.6428 → clear overdispersion (> 1).
+- With AGE/SEX: Pearson dispersion φ = 1.6439 (no reduction; essentially unchanged). AGE/SEX do not explain the overdispersion.
+- CAMAN mixture:
+  - Identified ĝ components with support points p̂ (probabilities) and weights π̂.
+  - Values (support p̂ and weights π̂) are printed by the notebook when CAMAN is available; they also populate `analysis_results.json`.
+  - Gradient function plot (`figs/gradient_binomial.png`) checks NPMLE (d(Ĝ,p) ≤ 1 overall, =1 at support points).
 
-## Communication-ready takeaway
-- We modeled the number of months with adequate iron stores out of total measurements per patient.
-- The simple binomial model showed 
-overdispersion, indicating subgroups with different iron adequacy probabilities.
-- A 3-component mixture captured heterogeneity with component p's around 0.02, 0.37, 0.84 and weights 0.41, 0.41, 0.18.
-- Age and sex show 
-limited association.
+## Visualization of mixture vs data
+- `figs/overlay_mixture_NR3.png`: histogram of observed proportions overlaid with vertical lines at support points p̂ and red points at heights equal to weights π̂ (visual mark-up).
 
-(See notebook `main.ipynb` for full reproducible analysis and figures.)
+## Interpretation
+- Adequacy of mixture: The fitted binomial mixture captures heterogeneity in success probabilities across patients. The support points p̂ and weights π̂ quantify latent sub-populations with different chances of adequate iron stores.
+- Overdispersion: Intercept-only GLM φ relative to 1 demonstrates [over/under]dispersion; mixture model accounts for extra-binomial variability by mixing over p.
+- Covariates: Change in φ after adding AGE/SEX suggests whether these covariates reduce overdispersion; if φ remains >1, residual heterogeneity remains, motivating mixtures.
+
+## Reproducibility
+- Run `main.ipynb` (R kernel) to reproduce all tables, figures, and model results. Figures are saved into `figs/` automatically. Numeric outputs are also written to `descriptives.json` and `analysis_results.json`.
+
+## Appendix (key code references)
+- Notebook includes:
+  - Data prep and summaries.
+  - GLM fits and Pearson dispersion computations.
+  - CAMAN VEM→EM and NPML summaries.
+  - Gradient function and overlay plots.
