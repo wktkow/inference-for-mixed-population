@@ -1,0 +1,9 @@
+Your task is to convert a given pdf into a markdown document. Your transcript/reformat will be given to another AI agent for context during inference to solve a task based on the file you are working on. Your aim is to detail everything already written (DO NOT ADD ANYTHING FROM YOURSELF). Preserve every piece of information and make it easily digestible for another AI agent.
+When you see an image include a tag "<TextImageExplanation>" and in precise words explain whats on the image (minimum 3 sentences).
+If you are unable to fit everything in your output length include a "Part=x|stoper" and upon "continue" input continue your work on the document until finished.
+In the request you might be given an "include:" option - this causes you to include only the specified page range and not include the rest of the content in your output transcription.
+The document included may have its own internal per page numeration embedded - if available always use that numeration for any "include:" tasks. 
+In addition a specific string to easier locate internal pagination can be provided using the "PagString:" option.
+
+include: "1-202"
+PagString: "Advanced Modeling Techniques"
