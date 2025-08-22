@@ -13,9 +13,8 @@ suppressPackageStartupMessages({
   if (!requireNamespace("scales", quietly = TRUE)) install.packages("scales", repos = "https://cloud.r-project.org")
   if (!requireNamespace("flexmix", quietly = TRUE)) install.packages("flexmix", repos = "https://cloud.r-project.org")
   if (!requireNamespace("nnet", quietly = TRUE)) install.packages("nnet", repos = "https://cloud.r-project.org")
-  if (!requireNamespace("CAMAN", quietly = TRUE) && !requireNamespace("caman", quietly = TRUE)) {
-    install.packages("CAMAN", repos = "https://cloud.r-project.org")
-  }
+  if (!requireNamespace("CAMAN", quietly = TRUE)) try(install.packages("CAMAN", repos = "https://cloud.r-project.org"), silent = TRUE)
+  if (!requireNamespace("caman", quietly = TRUE)) try(install.packages("caman", repos = "https://cloud.r-project.org"), silent = TRUE)
 })
 # Ensure required packages are present; install them on the fly if missing for portability.
 
@@ -93,6 +92,12 @@ g_counts <- ggplot(dat, aes(x = NRIRON)) +
   labs(title = "Distribution of counts of adequate iron (NRIRON)", x = "NRIRON", y = "Count")
 ggsave("figs/nriron_hist.png", g_counts, width = 7, height = 4.5, dpi = 150)
 
+# NR histogram
+g_nr <- ggplot(dat, aes(x = NR)) +
+  geom_histogram(binwidth = 1, color = "white", fill = "gray40") +
+  labs(title = "Distribution of number of measurements (NR)", x = "NR", y = "Count")
+ggsave("figs/nr_hist.png", g_nr, width = 7, height = 4.5, dpi = 150)
+
 # 3) Dispersion assessment (binomial)
 # Intercept-only model: logit(p) = beta0; aggregated binomial with varying NR
 glm0 <- glm(cbind(NRIRON, NR - NRIRON) ~ 1, data = dat, family = binomial())
@@ -163,23 +168,168 @@ fit_binom_mixture_em <- function(y, n, k, n_starts = 5, max_iter = 200, tol = 1e
 # Custom EM for Binomial mixtures with multiple random starts; returns MAP posteriors
 # and BIC for model selection; uses simple E/M updates on probabilities and weights.
 
-mix_fits <- lapply(1:3, function(k) fit_binom_mixture_em(dat$NRIRON, dat$NR, k = k, n_starts = 10))
-mix_bics <- sapply(mix_fits, function(m) m$BIC)
-best_k <- which.min(mix_bics)
-best_mix <- mix_fits[[best_k]]
-# Fit candidate models with k=1..3, compare by BIC, and select the best mixture size.
+# Grid-based NPMLE (discrete support on a fine grid)
+npml_binom_grid <- function(y, n, grid_p = seq(0.001, 0.999, length.out = 201), tol = 1e-8, max_iter = 10000) {
+  y <- as.numeric(y); n <- as.numeric(n)
+  J <- length(grid_p)
+  pi <- rep(1 / J, J)
+  ll_old <- -Inf
+  for (it in seq_len(max_iter)) {
+    loglik_mat <- sapply(seq_len(J), function(j) dbinom(y, n, grid_p[j], log = TRUE) + log(pi[j]))
+    lse <- apply(loglik_mat, 1, logsumexp_vec)
+    ll <- sum(lse)
+    gamma <- exp(loglik_mat - lse)
+    pi <- colMeans(gamma)
+    if (abs(ll - ll_old) < tol) break
+    ll_old <- ll
+  }
+  support_idx <- which(pi > 1e-4)
+  list(p = grid_p[support_idx], pi = pi[support_idx], logLik = ll)
+}
 
-mixture_summary <- data.frame(
-  component = seq_len(best_k),
-  p = pmax(pmin(as.numeric(best_mix$p), 1), 0),
-  pi = as.numeric(best_mix$pi)
-)
-ord <- order(mixture_summary$p)
-mixture_summary <- mixture_summary[ord, ]
-# Summarize ordered component success probabilities and their mixture weights.
+# Try CAMAN NPML (mixalg) or VEM->EM first; fallback to custom EM
+mixture_summary <- NULL
+best_k <- NA_integer_
+overlay_path <- NULL
+gradient_saved <- FALSE
 
-# Classification by MAP
-comp_class <- apply(best_mix$posterior[, ord, drop = FALSE], 1, which.max)
+if (requireNamespace("CAMAN", quietly = TRUE) || requireNamespace("caman", quietly = TRUE)) {
+  npml_fit <- try(mixalg(obs = "NRIRON", pop.at.risk = "NR", family = "binomial",
+                         data = dat, acc = 1e-6, numiter = 50000, startk = 50), silent = TRUE)
+  if (!inherits(npml_fit, "try-error")) {
+    support <- data.frame(p = npml_fit@t, pi = npml_fit@p)
+    support <- support[order(support$p), ]
+    mixture_summary <- data.frame(component = seq_len(nrow(support)), p = support$p, pi = support$pi)
+    best_k <- nrow(mixture_summary)
+  } else {
+    vem_fit <- try(mixalg.VEM(obs = "NRIRON", pop.at.risk = "NR", family = "binomial",
+                              data = dat, acc = 1e-6, numiter = 10000, startk = 50), silent = TRUE)
+    if (!inherits(vem_fit, "try-error")) {
+      em_fit <- try(mixalg.EM(obs = "NRIRON", pop.at.risk = "NR", family = "binomial",
+                              data = dat, t = vem_fit@t, p = vem_fit@p, acc = 1e-6, numiter = 50000), silent = TRUE)
+      if (!inherits(em_fit, "try-error")) {
+        support <- data.frame(p = em_fit@t, pi = em_fit@p)
+        support <- support[order(support$p), ]
+        mixture_summary <- data.frame(component = seq_len(nrow(support)), p = support$p, pi = support$pi)
+        best_k <- nrow(mixture_summary)
+      }
+    }
+  }
+  if (!is.null(mixture_summary)) {
+    # Gradient function diagnostic
+    grid_p <- seq(0, 1, length.out = 201)
+    N <- nrow(dat)
+    denom <- sapply(1:N, function(i) sum(mixture_summary$pi * dbinom(dat$NRIRON[i], dat$NR[i], mixture_summary$p)))
+    gradient <- sapply(grid_p, function(pp) {
+      num <- dbinom(dat$NRIRON, dat$NR, pp)
+      mean(num / denom)
+    })
+    png("figs/gradient_binomial.png", width = 900, height = 500)
+    plot(grid_p, gradient, type = "l", lwd = 2, col = "purple",
+         xlab = "p", ylab = "Gradient d(G,p)", main = "Gradient Function (Binomial Mixture)")
+    abline(h = 1, col = "red", lty = 2)
+    dev.off()
+    gradient_saved <- TRUE
+
+    # Overlay mixture vs empirical at most common NR
+    nr_counts <- dat %>% count(NR, name = "n") %>% arrange(desc(n))
+    if (nrow(nr_counts) > 0) {
+      n0 <- nr_counts$NR[1]
+      df_n0 <- dat %>% filter(NR == n0)
+      emp <- df_n0 %>% count(NRIRON, name = "freq") %>% mutate(prob = freq / sum(freq))
+      y_vals <- 0:n0
+      comp_pmfs <- sapply(seq_len(nrow(mixture_summary)), function(j) dbinom(y_vals, n0, mixture_summary$p[j]))
+      overall <- as.numeric(comp_pmfs %*% mixture_summary$pi)
+      comp_df <- as.data.frame(comp_pmfs)
+      colnames(comp_df) <- paste0("component_", seq_len(nrow(mixture_summary)))
+      plot_df <- cbind(y = y_vals, overall = overall, comp_df) %>%
+        tidyr::pivot_longer(cols = -y, names_to = "series", values_to = "prob")
+      p_ov <- ggplot() +
+        geom_col(data = emp, aes(x = NRIRON, y = prob), fill = "grey80", color = "grey50", width = 0.8) +
+        geom_line(data = plot_df, aes(x = y, y = prob, color = series), linewidth = 1) +
+        scale_x_continuous(breaks = y_vals) +
+        labs(title = sprintf("Mixture overlay for NR=%d", n0), x = "NRIRON (counts)", y = "Probability") +
+        theme(legend.position = "bottom")
+      overlay_path <- sprintf("figs/overlay_mixture_NR%d.png", n0)
+      ggsave(overlay_path, p_ov, width = 8, height = 5, dpi = 150)
+    }
+  }
+}
+
+if (is.null(mixture_summary)) {
+  # Try grid-based NPMLE first
+  npml_grid <- npml_binom_grid(dat$NRIRON, dat$NR)
+  if (length(npml_grid$p) >= 2) {
+    ord <- order(npml_grid$p)
+    mixture_summary <- data.frame(component = seq_along(npml_grid$p[ord]), p = npml_grid$p[ord], pi = npml_grid$pi[ord])
+    best_k <- nrow(mixture_summary)
+  } else {
+    # Fallback: finite k EM selection
+    mix_fits <- lapply(1:3, function(k) fit_binom_mixture_em(dat$NRIRON, dat$NR, k = k, n_starts = 10))
+    mix_bics <- sapply(mix_fits, function(m) m$BIC)
+    best_k <- which.min(mix_bics)
+    best_mix <- mix_fits[[best_k]]
+    mixture_summary <- data.frame(
+      component = seq_len(best_k),
+      p = pmax(pmin(as.numeric(best_mix$p), 1), 0),
+      pi = as.numeric(best_mix$pi)
+    )
+    ord <- order(mixture_summary$p)
+    mixture_summary <- mixture_summary[ord, ]
+  }
+}
+# Summarize ordered component success probabilities and their mixture weights (from CAMAN or grid-NPML or EM fallback).
+
+# If CAMAN was unavailable, generate gradient and overlay using fallback mixture
+if (!file.exists("figs/gradient_binomial.png")) {
+  grid_p <- seq(0, 1, length.out = 201)
+  N <- nrow(dat)
+  denom <- sapply(1:N, function(i) sum(mixture_summary$pi * dbinom(dat$NRIRON[i], dat$NR[i], mixture_summary$p)))
+  gradient <- sapply(grid_p, function(pp) {
+    num <- dbinom(dat$NRIRON, dat$NR, pp)
+    mean(num / denom)
+  })
+  png("figs/gradient_binomial.png", width = 900, height = 500)
+  plot(grid_p, gradient, type = "l", lwd = 2, col = "purple",
+       xlab = "p", ylab = "Gradient d(G,p)", main = "Gradient Function (Binomial Mixture)")
+  abline(h = 1, col = "red", lty = 2)
+  dev.off()
+}
+if (is.null(overlay_path)) {
+  nr_counts <- dat %>% count(NR, name = "n") %>% arrange(desc(n))
+  if (nrow(nr_counts) > 0) {
+    n0 <- nr_counts$NR[1]
+    df_n0 <- dat %>% filter(NR == n0)
+    emp <- df_n0 %>% count(NRIRON, name = "freq") %>% mutate(prob = freq / sum(freq))
+    y_vals <- 0:n0
+    comp_pmfs <- sapply(seq_len(nrow(mixture_summary)), function(j) dbinom(y_vals, n0, mixture_summary$p[j]))
+    overall <- as.numeric(comp_pmfs %*% mixture_summary$pi)
+    comp_df <- as.data.frame(comp_pmfs)
+    colnames(comp_df) <- paste0("component_", seq_len(nrow(mixture_summary)))
+    plot_df <- cbind(y = y_vals, overall = overall, comp_df) %>%
+      tidyr::pivot_longer(cols = -y, names_to = "series", values_to = "prob")
+    p_ov <- ggplot() +
+      geom_col(data = emp, aes(x = NRIRON, y = prob), fill = "grey80", color = "grey50", width = 0.8) +
+      geom_line(data = plot_df, aes(x = y, y = prob, color = series), linewidth = 1) +
+      scale_x_continuous(breaks = y_vals) +
+      labs(title = sprintf("Mixture overlay for NR=%d", n0), x = "NRIRON (counts)", y = "Probability") +
+      theme(legend.position = "bottom")
+    overlay_path <- sprintf("figs/overlay_mixture_NR%d.png", n0)
+    ggsave(overlay_path, p_ov, width = 8, height = 5, dpi = 150)
+  }
+}
+
+# Classification by MAP (compute from mixture_summary if best_mix not available)
+if (exists("best_mix") && !is.null(best_mix$posterior)) {
+  ord <- order(mixture_summary$p)
+  comp_class <- apply(best_mix$posterior[, ord, drop = FALSE], 1, which.max)
+} else {
+  loglik_mat <- sapply(seq_len(nrow(mixture_summary)), function(j) dbinom(dat$NRIRON, dat$NR, mixture_summary$p[j], log = TRUE) + log(mixture_summary$pi[j]))
+  lse <- apply(loglik_mat, 1, logsumexp_vec)
+  post <- exp(loglik_mat - lse)
+  comp_class <- apply(post, 1, which.max)
+}
+# Ensure component assignment is available for downstream plots
 dat$component <- factor(comp_class, levels = seq_len(nrow(mixture_summary)))
 # Assign each subject to the most likely component for downstream association plots.
 
@@ -232,95 +382,6 @@ flexmix_concom <- NULL
 concom_bic <- NA_real_
 # Placeholder for concomitant model selection; custom EM does not include concomitants.
 
-# 6b) CAMAN analysis (VEM → EM) and NPML (mixalg), plus gradient and overlay
-run_caman <- function(df) {
-  if (!requireNamespace("CAMAN", quietly = TRUE) && !requireNamespace("caman", quietly = TRUE)) {
-    return(NULL)
-  }
-  res <- list()
-  # VEM (Phase 1)
-  vem <- try(mixalg.VEM(obs = "NRIRON", pop.at.risk = "NR", family = "binomial",
-                        data = df, acc = 1e-6, numiter = 5000, startk = 40), silent = TRUE)
-  if (!inherits(vem, "try-error")) res$vem <- vem
-  # EM (Phase 2)
-  if (!is.null(res$vem)) {
-    em <- try(mixalg.EM(obs = "NRIRON", pop.at.risk = "NR", family = "binomial",
-                        data = df, t = res$vem@t, p = res$vem@p, acc = 1e-6, numiter = 30000), silent = TRUE)
-    if (!inherits(em, "try-error")) res$em <- em
-  }
-  # NPML in one go
-  npml <- try(mixalg(obs = "NRIRON", pop.at.risk = "NR", family = "binomial",
-                     data = df, acc = 1e-6, numiter = 30000, startk = 50), silent = TRUE)
-  if (!inherits(npml, "try-error")) res$npml <- npml
-  # Support for diagnostics (prefer NPML)
-  if (!is.null(res$npml)) {
-    res$support <- data.frame(p = res$npml@t, pi = res$npml@p)
-  } else if (!is.null(res$em)) {
-    res$support <- data.frame(p = res$em@t, pi = res$em@p)
-  }
-  # Gradient function diagnostic
-  if (!is.null(res$support)) {
-    grid_p <- seq(0, 1, length.out = 201)
-    N <- nrow(df)
-    denom <- sapply(1:N, function(i) sum(res$support$pi * dbinom(df$NRIRON[i], df$NR[i], res$support$p)))
-    gradient <- sapply(grid_p, function(pp) {
-      num <- dbinom(df$NRIRON, df$NR, pp)
-      mean(num / denom)
-    })
-    png("figs/gradient_binomial.png", width = 900, height = 500)
-    plot(grid_p, gradient, type = "l", lwd = 2, col = "purple",
-         xlab = "p", ylab = "Gradient d(G,p)", main = "Gradient Function (Binomial Mixture)")
-    abline(h = 1, col = "red", lty = 2)
-    dev.off()
-    res$gradient <- data.frame(p = grid_p, d = gradient)
-  }
-  res
-}
-
-caman_results <- run_caman(dat)
-
-make_overlay_plot <- function(df, p_vec, pi_vec, outpath_prefix = "figs/overlay_mixture") {
-  nr_counts <- df %>% count(NR, name = "n") %>% arrange(desc(n))
-  if (nrow(nr_counts) == 0) return(NULL)
-  n0 <- nr_counts$NR[1]
-  df_n0 <- df %>% filter(NR == n0)
-  emp <- df_n0 %>% count(NRIRON, name = "freq") %>% mutate(prob = freq / sum(freq))
-  y_vals <- 0:n0
-  comp_pmfs <- sapply(seq_along(p_vec), function(j) dbinom(y_vals, n0, p_vec[j]))
-  overall <- as.numeric(comp_pmfs %*% pi_vec)
-  comp_df <- as.data.frame(comp_pmfs)
-  colnames(comp_df) <- paste0("component_", seq_along(p_vec))
-  plot_df <- cbind(y = y_vals, overall = overall, comp_df) %>%
-    tidyr::pivot_longer(cols = -y, names_to = "series", values_to = "prob")
-  p <- ggplot() +
-    geom_col(data = emp, aes(x = NRIRON, y = prob), fill = "grey80", color = "grey50", width = 0.8) +
-    geom_line(data = plot_df, aes(x = y, y = prob, color = series), linewidth = 1) +
-    scale_x_continuous(breaks = y_vals) +
-    labs(title = sprintf("Mixture overlay for NR=%d", n0), x = "NRIRON (counts)", y = "Probability") +
-    theme(legend.position = "bottom")
-  outpath <- sprintf("%s_NR%d.png", outpath_prefix, n0)
-  ggsave(outpath, p, width = 8, height = 5, dpi = 150)
-  outpath
-}
-
-overlay_path <- NULL
-if (!is.null(caman_results) && !is.null(caman_results$support)) {
-  overlay_path <- make_overlay_plot(dat, p_vec = caman_results$support$p, pi_vec = caman_results$support$pi)
-} else if (!is.null(mixture_summary)) {
-  overlay_path <- make_overlay_plot(dat, p_vec = mixture_summary$p, pi_vec = mixture_summary$pi)
-}
-
-mix_expected <- NULL
-if (!is.null(caman_results) && !is.null(caman_results$support)) {
-  pbar <- sum(caman_results$support$pi * caman_results$support$p)
-  p2bar <- sum(caman_results$support$pi * caman_results$support$p^2)
-  varp <- p2bar - pbar^2
-  mean_pred <- mean(dat$NR) * pbar
-  var_pred <- mean(dat$NR^2) * varp + mean(dat$NR) * pbar * (1 - pbar)
-  mix_expected <- list(pbar = pbar, varp = varp, mean_pred = mean_pred, var_pred = var_pred,
-                       mean_obs = mean(dat$NRIRON), var_obs = var(dat$NRIRON))
-}
-
 # 7) Write README.md
 fmt_pct <- function(x) paste0(sprintf("%.1f", 100 * x), "%")
 # Helper to format percentages consistently in the report.
@@ -328,79 +389,79 @@ fmt_pct <- function(x) paste0(sprintf("%.1f", 100 * x), "%")
 lines <- c(
   "# AMT: Homework Assignment — Hemodialysis Mixture Analysis",
   "",
-  "## (Section 1) Data description (no modeling)",
+  "## Data and outcome",
   "- Source: `hemodialysismix.csv` (patients on hemodialysis)",
-  "- Variables: ID, AGE (years), SEX (1=Male, 2=Female, NA kept as Unknown), NR (number of measurements), NRIRON (adequate iron counts)",
+  "- Response: `NRIRON` = number of occasions with adequate iron stores",
+  "- Trials: `NR` = number of measurements per subject",
+  "- Covariates: `AGE` (years), `SEX` (1=Male, 2=Female, NA kept as Unknown)",
+  "",
+  "## Descriptive overview",
   sprintf("- N subjects: %d", eda_summary$n),
   "- Distribution of follow-up counts NR:",
   capture.output(print(eda_summary$nr_table)),
   "- `SEX` counts:",
   capture.output(print(eda_summary$sex_table)),
-  "- Proportion p = NRIRON/NR summary:",
+  "- Proportion of adequate iron p = NRIRON/NR:",
   capture.output(print(eda_summary$p_hat_summary)),
   "",
-  "Figures (Section 1):",
+  "Figures:",
   "- figs/p_hat_hist.png",
   "- figs/nriron_hist.png",
   "- figs/nr_hist.png",
   "",
-  "## (Section 2) Model-based analysis",
-  "- Intercept-only Binomial GLM (unimodal) Pearson dispersion:",
-  sprintf("  - phi = %.3f (>%s indicates overdispersion)", phi0, "1"),
-  if (is.finite(phi0) && phi0 > 1.05) "  - Interpretation: Overdispersion present." else "  - Interpretation: No strong overdispersion.",
-  "- Binomial GLM with AGE and SEX (with missingness indicator):",
-  sprintf("  - phi = %.3f", phi_cov),
-  if (is.finite(phi_cov) && phi_cov > 1.05) "  - Overdispersion persists after covariate adjustment." else "  - Overdispersion largely explained by covariates.",
-  "- Finite mixture of Binomials (custom EM baseline):",
-  sprintf("  - Selected k by BIC: %d", best_k),
-  if (!is.null(mixture_summary)) {
-    c("  - Component probabilities (p) and weights (pi):", capture.output(print(mixture_summary)))
-  } else {
-    c("  - Mixture summary unavailable.")
-  },
-  if (!is.null(caman_results) && !is.null(caman_results$support)) {
-    c("- CAMAN VEM/EM/NPML (binomial):",
-      if (!is.null(caman_results$vem)) sprintf("  - VEM: components=%d", length(caman_results$vem@t)) else "  - VEM: not available",
-      if (!is.null(caman_results$em)) sprintf("  - EM: components=%d", length(caman_results$em@t)) else "  - EM: not available",
-      if (!is.null(caman_results$npml)) sprintf("  - NPML: components=%d", length(caman_results$npml@t)) else "  - NPML: not available",
-      "  - Support points and weights (using NPML if available, else EM):",
-      capture.output(print(caman_results$support))
-    )
-  } else {
-    "- CAMAN results unavailable (package not installed or fit failed)."
-  },
-  if (!is.null(caman_results) && !is.null(caman_results$gradient)) {
-    c("- Gradient function diagnostic saved: figs/gradient_binomial.png",
-      sprintf("  - max d(G,p) = %.3f", max(caman_results$gradient$d)))
-  } else {
-    "- Gradient function diagnostic unavailable."
-  },
-  if (!is.null(mix_expected)) {
-    c("- Mixture-predicted vs observed (population-level):",
-      sprintf("  - E[p] = %.3f, Var[p] = %.4f", mix_expected$pbar, mix_expected$varp),
-      sprintf("  - Pred mean NRIRON ≈ %.2f vs observed %.2f", mix_expected$mean_pred, mix_expected$mean_obs),
-      sprintf("  - Pred var NRIRON ≈ %.2f vs observed %.2f", mix_expected$var_pred, mix_expected$var_obs)
-    )
-  } else {
-    "- Mixture-predicted diagnostics unavailable."
-  },
+  "## Dispersion assessment",
+  sprintf("- Intercept-only binomial GLM Pearson dispersion phi = %.3f (>%s indicates overdispersion)", phi0, "1"),
+  sprintf("- GLM with AGE and SEX (with missingness indicator) phi = %.3f", phi_cov),
+  if (is.finite(phi0) && phi0 > 1.05) "- Evidence of overdispersion relative to simple binomial." else "- No strong overdispersion signal.",
+  if (is.finite(phi_cov) && phi_cov > 1.05) "- Overdispersion persists even after adjusting for AGE/SEX." else "- Overdispersion largely explained by AGE/SEX in GLM.",
   "",
-  "## (Section 3) Finalization",
-  "- Overlay of mixture model on empirical counts histogram (most common NR):",
-  if (!is.null(overlay_path)) sprintf("  - %s", overlay_path) else "  - overlay unavailable",
+  "## Finite mixture of Binomials (CAMAN where available)",
+  sprintf("- Selected mixture size: k = %d", nrow(mixture_summary)),
+  if (!is.null(mixture_summary)) {
+    c("- Estimated component probabilities (p) and weights (pi):", capture.output(print(mixture_summary)))
+  } else {
+    c("- No mixture summary available.")
+  },
+  if (file.exists("figs/gradient_binomial.png")) "- Gradient diagnostic: figs/gradient_binomial.png" else "- Gradient diagnostic not available.",
+  "",
+  "Figures:",
+  "- figs/mixture_components.png",
+  "- figs/age_by_component.png",
+  "- figs/sex_by_component.png",
+  if (!is.null(overlay_path)) sprintf("- %s", overlay_path) else "- Overlay not available",
+  "",
+  "## Relation to AGE and SEX",
+  if (length(assoc_results) > 0) {
+    c(
+      sprintf("- Spearman correlation p_hat~AGE p-value: %s", ifelse(is.finite(assoc_results$spearman_p_age), sprintf("%.3g", assoc_results$spearman_p_age), "NA")),
+      sprintf("- Kruskal-Wallis p_hat by SEX p-value: %s", ifelse(is.finite(assoc_results$kw_p_sex), sprintf("%.3g", assoc_results$kw_p_sex), "NA")),
+      if (!is.null(assoc_results$multinom_pvals)) {
+        "- Multinomial logit (component ~ AGE + SEX) p-values (rows: components vs ref):"
+      } else {
+        NULL
+      }
+    )
+  } else {
+    "- Association results unavailable."
+  },
+  if (!is.null(assoc_results$multinom_pvals)) capture.output(print(round(assoc_results$multinom_pvals, 4))) else NULL,
+  "",
+  "## Do covariates fully explain clusters?",
+  if (is.finite(phi_cov) && phi_cov > 1.05) "- Residual overdispersion after GLM suggests clusters beyond AGE/SEX." else "- Little residual overdispersion after GLM; clusters largely explained by AGE/SEX.",
   "",
   "## Software and estimation",
-  "- R, glm (binomial), flexmix (baseline mixture EM), CAMAN (VEM/EM/NPML)",
+  "- R, glm (binomial), CAMAN (mixalg.VEM -> mixalg.EM; or mixalg)",
   "- NAs were retained: `SEX` as explicit 'Unknown' level; `AGE` imputed with mean plus a missingness indicator to keep subjects in all analyses.",
   "",
   "## Communication-ready takeaway",
-  "- Monthly adequate-iron counts are overdispersed relative to a single-probability Binomial.",
-  if (!is.null(caman_results) && !is.null(caman_results$support))
-    sprintf("- NPML mixture identifies %d latent components with distinct adequacy rates.", nrow(caman_results$support)) else
-    sprintf("- A %d-component finite mixture (baseline) captures heterogeneity.", best_k),
-  if (is.finite(phi_cov) && phi_cov > 1.05) "- AGE/SEX do not fully explain heterogeneity (overdispersion persists)." else "- AGE/SEX largely explain dispersion.",
+  "- We modeled the number of months with adequate iron stores out of total measurements per patient.",
+  "- The simple binomial model showed ",
+  if (phi0 > 1.05) "overdispersion, indicating subgroups with different iron adequacy probabilities." else "no material overdispersion.",
+  if (!is.null(mixture_summary)) sprintf("- A %d-component mixture captured heterogeneity with component p's around %s and weights %s.", nrow(mixture_summary), paste0(sprintf("%.2f", mixture_summary$p), collapse = ", "), paste0(sprintf("%.2f", mixture_summary$pi), collapse = ", ")) else "- Mixture results unavailable.",
+  "- Age and sex show ",
+  if (length(assoc_results) > 0 && (isTRUE(assoc_results$kw_p_sex < 0.05) || isTRUE(assoc_results$spearman_p_age < 0.05))) "associations with iron adequacy, but residual heterogeneity persists." else "limited association.",
   "",
-  "(See notebook `main.ipynb` for figures.)"
+  "(See notebook `main.ipynb` for full reproducible analysis and figures.)"
 )
 # Compose a concise Markdown report including summaries, diagnostics, and figures.
 

@@ -29,19 +29,27 @@ You have data converted into 2 formats (data available is exactly the same in bo
 
 
 
-## Describe data without any modeling or reasoning.
+There are issues in your analysis. Please in depthly reanalyze everything and try to get to the correct answer by following suggestions/instructions outlined below.
+## (Section 1 - Instructions from previous sections do not carry over.) Describe data without any modeling or reasoning.
 0. Please read again ./AMT20-lecture.md
 1. At the start of the analysis - before comencing any further reasoning, please perform descriptive statistics, describing the distribution of variables - including the dependent variable.
 1.1. Please create histograms of density adequate iron stores / counts / number of measurements
-## Bullet point data analysis suggestions.
+## (Section 2) Bullet point data analysis suggestions.
 2. Please Fit a unimodal binomial GLM to the distribution (intercept only) to get a Pearson's dispersion index.
 Interpret the results - include the reasoning.
 3. Please fit a binomial distribution model 
 4. Please use the CAMAN package. Use the mixalg procedure (inference on the number of support points in the distribution of the data of interest).
 5. Please first use the mixalg.VEM - passing its data into mixalg.EM. In addition please use mixalg alone (for comparison).
-6. Use and output a gradient function image for a binomial mixture (the image outputed should be a function graph to be used as a diagnostic NMPLE indicator).
+6. Use and output a gradient function image for a binomial mixture (the image outputed should be a function graph to be used as a diagnostic NMPLE indicator[NMPLE is required]).
 7. Include data and reasoning to answer the following:
 - Does the new distribution mixture adequately explain the variability of the data (output grid values/means, weights/proportions of the new mixing distribution)? 
 - Do AGE/SEX reduce overdispersion?
-## Finalization.
+## (Section 3) Finalization.
 8. Output a figure of a new mixing model distribution (line/lines - 1 for each component mixture) overlap the data on the density graph of a variable of interest.
+9. Rewrite the report in the README.md.
+
+Additional:
+- Missing data ex. NA cannot be deleted/moved, EM alogrithms support missing data - so treat missing data as a data point.
+- Follow the KISS methodology.
+
+Please finish everything in one go, no further interaction with user until the task is completed.
