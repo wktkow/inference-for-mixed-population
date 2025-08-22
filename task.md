@@ -11,7 +11,7 @@ The objective of the study is to investigate the distribution of iron deficiency
 
 ### 2 Data file
 
-*   SAS file Hemodialysismix.sas7bdat
+*   SAS file Hemodialysismix.csv/rds
 *   Variables:
     1.  **ID**: identification number of the subject
     2.  **AGE**: age of the patient at the time of entering the study (years)
