@@ -1,0 +1,27 @@
+hemodialysismix conversion and validation report
+Timestamp: 2025-08-22 13:52:38 CEST
+Input: /home/bekind/Documents/purczec2-brr/hemodialysismix.sas7bdat
+Output (RDS): /home/bekind/Documents/purczec2-brr/hemodialysismix.rds
+Output (CSV): /home/bekind/Documents/purczec2-brr/hemodialysismix.csv
+Input size (bytes): 327,680
+Output size (bytes): 8,912
+Output size (CSV bytes): 68,984
+
+Read:
+- Duration: 36 ms
+- Warnings: none
+
+Validation:
+- Rows: 3,823
+- Columns: 5
+- Issues: 0
+
+Save RDS:
+- Success: TRUE
+- Duration: 42 ms
+- Warnings: none
+
+Save CSV:
+- Success: TRUE
+- Duration: 21 ms
+- Warnings: none

@@ -7,3 +7,15 @@ In addition a specific string to easier locate internal pagination can be provid
 
 include: "1-202"
 PagString: "Advanced Modeling Techniques"
+
+
+
+
+
+You have access to a terminal, an empty jupyter notebook and a .md file ./Amt20-lecture.md. Read this markdown document fully.
+Upon reading them analyze data in ./hemodialysismix.sas7bdat - data on which basis you have to complete the task.
+Using the jupyter notebook and R only complete the assingment outlined in task.md
+Every file you read should be read by 300 lines at a time at max (so to read a 600 lines doc request 0-300 and 300-600)
+The env is fully setup and ready to use anything you need.
+
+Additional notes:
