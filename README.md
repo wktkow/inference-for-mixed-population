@@ -1,4 +1,4 @@
-# AMT: Homework Assignment — Hemodialysis Mixture Analysis
+# Hemodialysis Mixture Analysis
 
 ## Data and outcome
 - Source: `hemodialysismix.csv` (patients on hemodialysis)
@@ -30,8 +30,8 @@
  0.0000  0.0000  0.0000  0.3118  0.6667  1.0000 
 
 Figures:
-- figs/p_hat_hist.png
-- figs/nriron_hist.png
+- ![Proportion histogram](figs/p_hat_hist.png)
+- ![Counts histogram](figs/nriron_hist.png)
 
 ## Dispersion assessment
 - Intercept-only binomial GLM Pearson dispersion phi = 1.643 (>1 indicates overdispersion)
@@ -48,9 +48,9 @@ Figures:
 3         3 0.84203424 0.1785835
 
 Figures:
-- figs/mixture_components.png
-- figs/age_by_component.png
-- figs/sex_by_component.png
+- ![Mixture components](figs/mixture_components.png)
+- ![Age by component](figs/age_by_component.png)
+- ![Sex by component](figs/sex_by_component.png)
 
 ## Relation to AGE and SEX
 - Spearman correlation p_hat~AGE p-value: 0.155
